@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#efe5cf">
+
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+
+  <!-- 第一張照片是首屏重要內容，優先載入 -->
+  <link rel="preload" as="image" href="./p1.jpg" fetchpriority="high">
+
+  <!-- 只建立 Supabase 連線，不會先下載 MP3 -->
+  <link rel="preconnect" href="https://jfiacrutgryyyscfnlfh.supabase.co" crossorigin>
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="展品導覽">
+
+  <title>展品語音導覽</title>
+
+  <style>
+    :root{
+      --ink:#3a2a12;
+      --line:rgba(74,52,24,.20);
+      --card:rgba(250,246,236,.80);
+      --shadow:0 5px 16px rgba(55,38,15,.10);
+      --radius:20px;
+    }
+
+    *{box-sizing:border-box}
+
+    html{background:#f4ecdb}
+
+    body{
+      margin:0;
+      min-height:100svh;
+      color:var(--ink);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",
+        "PingFang TC","Microsoft JhengHei",sans-serif;
+      background:
+        linear-gradient(rgba(248,244,234,.72),rgba(248,244,234,.72)),
+        url("bk.jpg") center/cover fixed;
+    }
+
+    button{font:inherit;color:inherit}
+    button:focus-visible{outline:4px solid #075ff7;outline-offset:3px}
+
+    .app{
+      width:min(100%,760px);
+      min-height:100svh;
+      margin:0 auto;
+      padding:max(12px,env(safe-area-inset-top)) 14px max(14px,env(safe-area-inset-bottom));
+    }
+
+    .screen[hidden]{display:none!important}
+
+    #detailScreen{
+      min-height:calc(100svh - max(12px,env(safe-area-inset-top)) - max(14px,env(safe-area-inset-bottom)));
+      display:grid;
+      grid-template-rows:auto auto minmax(250px,1fr) auto auto;
+      gap:10px;
+      align-content:stretch;
+    }
+
+    .status{
+      margin:0;
+      text-align:center;
+      font-size:clamp(1rem,3.7vw,1.25rem);
+      font-weight:800;
+    }
+
+    .info-card{
+      padding:12px 16px;
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      background:var(--card);
+      box-shadow:var(--shadow);
+    }
+
+    .era{
+      font-size:clamp(1.05rem,4vw,1.35rem);
+      font-weight:800;
+      margin-bottom:4px;
+    }
+
+    .title{
+      margin:0;
+      font-size:clamp(1.35rem,5.2vw,1.9rem);
+      font-weight:900;
+      line-height:1.25;
+    }
+
+    /* 整個照片區仍然只有一個可操作焦點：聽展品描述。 */
+    .describe-button{
+      width:100%;
+      min-height:250px;
+      position:relative;
+      overflow:hidden;
+      padding:0;
+      border:0;
+      border-radius:var(--radius);
+      background:#d8d2c8;
+      box-shadow:var(--shadow);
+      cursor:pointer;
+      isolation:isolate;
+    }
+
+    /* 兩層真正的 <img> 交替顯示。
+       下一張完整載入前，上一張會一直留在畫面上，所以不露出白/灰底。 */
+    .photo-layer{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      object-position:center;
+      opacity:0;
+      transition:opacity .12s linear;
+      pointer-events:none;
+      user-select:none;
+    }
+
+    .photo-layer.is-visible{opacity:1}
+
+    .describe-label{
+      position:absolute;
+      z-index:3;
+      left:50%;
+      top:50%;
+      transform:translate(-50%,-50%);
+      width:min(90%,610px);
+      min-height:120px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:14px;
+      padding:18px 22px;
+      border:5px solid #fff;
+      border-radius:22px;
+      background:rgba(0,0,0,.06);
+      color:#fff;
+      text-align:center;
+      text-shadow:0 2px 8px rgba(0,0,0,.72);
+      font-size:clamp(1.8rem,6.8vw,2.7rem);
+      font-weight:900;
+      pointer-events:none;
+    }
+
+    .play-icon{
+      width:48px;
+      height:48px;
+      flex:0 0 48px;
+      color:#fff;
+      filter:drop-shadow(0 2px 4px rgba(0,0,0,.45));
+    }
+
+    /* 若下一張真的還沒到，保留目前照片，只疊一小段載入提示。 */
+    .photo-loading{
+      position:absolute;
+      z-index:4;
+      left:50%;
+      bottom:18px;
+      transform:translateX(-50%);
+      width:max-content;
+      max-width:calc(100% - 32px);
+      padding:9px 14px;
+      border-radius:999px;
+      background:rgba(58,42,18,.90);
+      color:#fff;
+      font-size:1rem;
+      font-weight:800;
+      pointer-events:none;
+    }
+
+    .nav-row{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+
+    .control{
+      min-height:86px;
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      background:var(--card);
+      box-shadow:var(--shadow);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      padding:14px 16px;
+      font-size:clamp(1.25rem,4.8vw,1.8rem);
+      font-weight:900;
+      cursor:pointer;
+    }
+
+    .overview-button{width:100%;min-height:78px}
+
+    .visual-status{
+      position:fixed;
+      left:50%;
+      bottom:max(18px,env(safe-area-inset-bottom));
+      transform:translateX(-50%);
+      width:min(calc(100% - 32px),620px);
+      z-index:20;
+      padding:14px 18px;
+      border-radius:16px;
+      background:rgba(58,42,18,.94);
+      color:#fff;
+      text-align:center;
+      font-size:1.05rem;
+      font-weight:800;
+      box-shadow:0 6px 20px rgba(0,0,0,.20);
+    }
+
+    .sr-only{
+      position:absolute!important;
+      width:1px!important;
+      height:1px!important;
+      padding:0!important;
+      margin:-1px!important;
+      overflow:hidden!important;
+      clip:rect(0,0,0,0)!important;
+      white-space:nowrap!important;
+      border:0!important;
+    }
+
+    #overviewScreen{padding-bottom:10px}
+
+    .overview-header{
+      display:grid;
+      grid-template-columns:76px 1fr 76px;
+      align-items:center;
+      gap:8px;
+      margin-bottom:4px;
+    }
+
+    .back-button{
+      min-height:64px;
+      border:1px solid var(--line);
+      border-radius:16px;
+      background:var(--card);
+      box-shadow:var(--shadow);
+      font-size:1.55rem;
+      font-weight:900;
+    }
+
+    .overview-title{
+      margin:0;
+      text-align:center;
+      font-size:clamp(1.7rem,6vw,2.4rem);
+      font-weight:900;
+    }
+
+    .overview-count{
+      margin:0 0 12px;
+      text-align:center;
+      font-weight:800;
+    }
+
+    .overview-list{
+      list-style:none;
+      padding:0;
+      margin:0;
+      display:grid;
+      gap:10px;
+    }
+
+    .overview-item{
+      width:100%;
+      min-height:96px;
+      padding:16px 18px;
+      border:1px solid var(--line);
+      border-radius:18px;
+      background:var(--card);
+      box-shadow:var(--shadow);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:14px;
+      text-align:left;
+      cursor:pointer;
+    }
+
+    .overview-main{display:grid;gap:4px}
+    .overview-number{font-size:1.05rem;font-weight:900}
+    .overview-name{font-size:clamp(1.25rem,4.7vw,1.7rem);font-weight:900}
+
+    .current-badge{
+      width:max-content;
+      padding:4px 9px;
+      border-radius:999px;
+      background:#947039;
+      color:#fff;
+      font-size:.9rem;
+      font-weight:900;
+    }
+
+    .chevron{font-size:1.8rem;font-weight:900}
+
+    @media(max-height:700px){
+      #detailScreen{
+        grid-template-rows:auto auto minmax(210px,1fr) auto auto;
+        gap:8px;
+      }
+      .info-card{padding:9px 13px}
+      .describe-label{min-height:100px}
+      .control{min-height:74px}
+      .overview-button{min-height:68px}
+    }
+
+    @media (prefers-reduced-motion: reduce){
+      .photo-layer{transition:none}
+    }
+  </style>
+</head>
+
+<body>
+<main class="app">
+
+  <section id="loadingScreen" class="screen" aria-live="polite">
+    <p id="loadingMessage" class="status">正在載入第一件展品</p>
+  </section>
+
+  <section id="detailScreen" class="screen" aria-labelledby="exhibitTitle" hidden>
+    <p id="positionText" class="status">第 1 件</p>
+
+    <section class="info-card">
+      <div id="exhibitEra" class="era"></div>
+      <h1 id="exhibitTitle" class="title"></h1>
+    </section>
+
+    <button id="describeButton" class="describe-button" type="button"
+      aria-label="聽展品描述">
+
+      <!-- alt 空白 + aria-hidden：不會額外成為螢幕閱讀器的圖片焦點 -->
+      <img id="photoA" class="photo-layer is-visible"
+        src="./p1.jpg"
+        alt=""
+        aria-hidden="true"
+        loading="eager"
+        decoding="async"
+        fetchpriority="high">
+
+      <img id="photoB" class="photo-layer"
+        alt=""
+        aria-hidden="true"
+        decoding="async"
+        fetchpriority="low">
+
+      <span class="describe-label" aria-hidden="true">
+        <svg class="play-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+          <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" stroke-width="5"/>
+          <path d="M27 20 L46 32 L27 44 Z" fill="currentColor"/>
+        </svg>
+        <span id="describeVisualText">聽展品描述</span>
+      </span>
+
+      <span id="photoLoading" class="photo-loading" hidden aria-hidden="true">
+        正在載入下一件…
+      </span>
+    </button>
+
+    <div class="nav-row">
+      <button id="prevButton" class="control" type="button" aria-label="上一件">
+        <span aria-hidden="true">←</span><span>上一件</span>
+      </button>
+
+      <button id="nextButton" class="control" type="button" aria-label="下一件">
+        <span>下一件</span><span aria-hidden="true">→</span>
+      </button>
+    </div>
+
+    <button id="overviewButton" class="control overview-button" type="button">
+      <span aria-hidden="true">☰</span>
+      <span>展品總覽</span>
+    </button>
+
+    <div id="visualStatus" class="visual-status" role="status"
+      aria-live="polite" aria-atomic="true" hidden></div>
+
+    <div id="liveStatus" class="sr-only"
+      aria-live="polite" aria-atomic="true"></div>
+
+    <audio id="audioPlayer" preload="none"></audio>
+  </section>
+
+  <section id="overviewScreen" class="screen" hidden aria-labelledby="overviewHeading">
+    <div class="overview-header">
+      <button id="backButton" class="back-button" type="button"
+        aria-label="返回目前展品">←</button>
+      <h1 id="overviewHeading" class="overview-title">展品總覽</h1>
+      <span aria-hidden="true"></span>
+    </div>
+
+    <p id="overviewCount" class="overview-count"></p>
+    <ul id="overviewList" class="overview-list"></ul>
+  </section>
+
+</main>
+
+<script>
+  let exhibits = [];
+  let currentIndex = 0;
+
+  // 目前顯示哪一層照片。
+  let visiblePhoto = "A";
+  let navigationBusy = false;
+  let loadingHintTimer = null;
+
+  // 只預載「下一張」；不一次抓 17 張。
+  let nextPreload = null;
+
+  // 音訊狀態。
+  let audioState = "idle"; // idle | playing | paused
+  let loadedAudioIndex = -1;
+
+  const SUPABASE_BASE =
+    "https://jfiacrutgryyyscfnlfh.supabase.co/storage/v1/object/public/audioo/";
+
+  const loadingScreen = document.getElementById("loadingScreen");
+  const loadingMessage = document.getElementById("loadingMessage");
+  const detailScreen = document.getElementById("detailScreen");
+  const overviewScreen = document.getElementById("overviewScreen");
+
+  const positionText = document.getElementById("positionText");
+  const exhibitEra = document.getElementById("exhibitEra");
+  const exhibitTitle = document.getElementById("exhibitTitle");
+
+  const describeButton = document.getElementById("describeButton");
+  const describeVisualText = document.getElementById("describeVisualText");
+  const photoA = document.getElementById("photoA");
+  const photoB = document.getElementById("photoB");
+  const photoLoading = document.getElementById("photoLoading");
+
+  const prevButton = document.getElementById("prevButton");
+  const nextButton = document.getElementById("nextButton");
+  const overviewButton = document.getElementById("overviewButton");
+
+  const visualStatus = document.getElementById("visualStatus");
+  const liveStatus = document.getElementById("liveStatus");
+
+  const audioPlayer = document.getElementById("audioPlayer");
+
+  const overviewHeading = document.getElementById("overviewHeading");
+  const overviewCount = document.getElementById("overviewCount");
+  const overviewList = document.getElementById("overviewList");
+  const backButton = document.getElementById("backButton");
+
+  let visualStatusTimer = null;
+
+  async function loadExhibitsFromTxt(){
+    const exhibitsUrl = new URL("./exhibits.txt", document.baseURI);
+
+    // 不使用 no-store，讓瀏覽器可以正常使用 HTTP cache。
+    const response = await fetch(exhibitsUrl);
+
+    if(!response.ok){
+      throw new Error(`HTTP ${response.status}：${exhibitsUrl.href}`);
+    }
+
+    const raw = await response.text();
+
+    const lines = raw
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    if(lines.length < 2){
+      throw new Error("exhibits.txt 沒有展品資料");
+    }
+
+    exhibits = lines.slice(1).map((line, rowIndex) => {
+      const cols = line.split("\t").map(value => value.trim());
+
+      if(cols.length < 3){
+        throw new Error(`exhibits.txt 第 ${rowIndex + 2} 列格式錯誤`);
+      }
+
+      const [number, era, title] = cols;
+
+      return {
+        number,
+        era,
+        title,
+        image: `p${number}.jpg`,
+        // MP3 只在真正按播放時才會使用這個網址。
+        audio: `${SUPABASE_BASE}p${number}.mp3`
+      };
+    });
+  }
+
+  function announce(message, showVisual = false){
+    liveStatus.textContent = "";
+    setTimeout(() => {
+      liveStatus.textContent = message;
+    }, 40);
+
+    if(showVisual){
+      if(visualStatusTimer) clearTimeout(visualStatusTimer);
+
+      visualStatus.textContent = message;
+      visualStatus.hidden = false;
+
+      visualStatusTimer = setTimeout(() => {
+        visualStatus.hidden = true;
+      }, 3000);
+    }
+  }
+
+  function setAudioState(state){
+    audioState = state;
+
+    if(state === "playing"){
+      describeButton.setAttribute("aria-label","暫停展品描述");
+      describeVisualText.textContent = "暫停展品描述";
+    }else if(state === "paused"){
+      describeButton.setAttribute("aria-label","繼續展品描述");
+      describeVisualText.textContent = "繼續展品描述";
+    }else{
+      describeButton.setAttribute("aria-label","聽展品描述");
+      describeVisualText.textContent = "聽展品描述";
+    }
+  }
+
+  function stopAudio({clearSource = true} = {}){
+    audioPlayer.pause();
+
+    try{
+      if(audioPlayer.currentTime){
+        audioPlayer.currentTime = 0;
+      }
+    }catch(e){}
+
+    if(clearSource){
+      audioPlayer.removeAttribute("src");
+      audioPlayer.load();
+      loadedAudioIndex = -1;
+    }
+
+    setAudioState("idle");
+  }
+
+  function currentPhotoElement(){
+    return visiblePhoto === "A" ? photoA : photoB;
+  }
+
+  function hiddenPhotoElement(){
+    return visiblePhoto === "A" ? photoB : photoA;
+  }
+
+  function waitForImage(img, src){
+    return new Promise((resolve, reject) => {
+      const absoluteSrc = new URL(src, document.baseURI).href;
+
+      // 如果就是已經完整載入的同一張，不需要再等。
+      if(img.src === absoluteSrc && img.complete && img.naturalWidth > 0){
+        resolve();
+        return;
+      }
+
+      img.onload = async () => {
+        try{
+          if(typeof img.decode === "function"){
+            await img.decode();
+          }
+        }catch(e){}
+        resolve();
+      };
+
+      img.onerror = () => reject(new Error(`圖片載入失敗：${src}`));
+
+      img.src = src;
+    });
+  }
+
+  function preloadNextImage(index){
+    const nextIndex = index + 1;
+
+    if(nextIndex >= exhibits.length){
+      nextPreload = null;
+      return;
+    }
+
+    const src = exhibits[nextIndex].image;
+    const img = new Image();
+
+    img.decoding = "async";
+
+    // 支援的瀏覽器會把它視為低優先背景工作。
+    try{
+      img.fetchPriority = "low";
+    }catch(e){}
+
+    img.src = src;
+    nextPreload = {index: nextIndex, img};
+  }
+
+  async function showExhibitImage(index){
+    const ex = exhibits[index];
+    const incoming = hiddenPhotoElement();
+
+    // 快速切換時，不要立刻顯示「載入中」；
+    // 超過 180ms 才顯示，避免畫面一直閃提示。
+    clearTimeout(loadingHintTimer);
+
+    loadingHintTimer = setTimeout(() => {
+      photoLoading.hidden = false;
+    }, 180);
+
+    try{
+      // 如果正好就是我們偷偷預載的下一張，可以沿用瀏覽器快取。
+      await waitForImage(incoming, ex.image);
+
+      clearTimeout(loadingHintTimer);
+      photoLoading.hidden = true;
+
+      const outgoing = currentPhotoElement();
+
+      incoming.classList.add("is-visible");
+      outgoing.classList.remove("is-visible");
+
+      visiblePhoto = visiblePhoto === "A" ? "B" : "A";
+
+      // 下一輪只預載下一張。
+      preloadNextImage(index);
+
+    }catch(error){
+      clearTimeout(loadingHintTimer);
+      photoLoading.hidden = true;
+      console.error(error);
+      throw error;
+    }
+  }
+
+  function renderText(){
+    const ex = exhibits[currentIndex];
+
+    positionText.textContent =
+      `第 ${currentIndex + 1} 件，共 ${exhibits.length} 件`;
+
+    exhibitEra.textContent = ex.era;
+    exhibitTitle.textContent = ex.title;
+
+    if(currentIndex === 0){
+      prevButton.setAttribute("aria-label","上一件，目前已是第一件");
+    }else{
+      prevButton.setAttribute("aria-label","上一件");
+    }
+
+    if(currentIndex === exhibits.length - 1){
+      nextButton.setAttribute("aria-label","下一件，目前已是最後一件");
+    }else{
+      nextButton.setAttribute("aria-label","下一件");
+    }
+
+    overviewButton.setAttribute(
+      "aria-label",
+      `展品總覽，共 ${exhibits.length} 件`
+    );
+
+    overviewButton.querySelector("span:last-child").textContent =
+      `展品總覽（共 ${exhibits.length} 件）`;
+  }
+
+  async function goToExhibit(targetIndex, {announceChange = true} = {}){
+    if(navigationBusy) return false;
+    if(targetIndex < 0 || targetIndex >= exhibits.length) return false;
+
+    navigationBusy = true;
+
+    try{
+      // 音訊先停止，但圖片仍保留目前畫面。
+      stopAudio();
+
+      // 先完整準備下一張，完成前不換文字、不露灰底。
+      await showExhibitImage(targetIndex);
+
+      currentIndex = targetIndex;
+      renderText();
+
+      if(announceChange){
+        announce(
+          `第 ${currentIndex + 1} 件，共 ${exhibits.length} 件，${exhibits[currentIndex].title}`
+        );
+      }
+
+      return true;
+
+    }catch(error){
+      announce("下一件展品照片載入失敗，請稍後再試", true);
+      return false;
+
+    }finally{
+      navigationBusy = false;
+    }
+  }
+
+  describeButton.addEventListener("click", async () => {
+    if(audioState === "playing"){
+      audioPlayer.pause();
+      setAudioState("paused");
+      announce("展品描述已暫停");
+      return;
+    }
+
+    try{
+      // 只有第一次按目前這件的按鈕，才設定音檔 URL。
+      if(loadedAudioIndex !== currentIndex){
+        audioPlayer.src = exhibits[currentIndex].audio;
+        loadedAudioIndex = currentIndex;
+      }
+
+      await audioPlayer.play();
+      setAudioState("playing");
+
+    }catch(error){
+      console.error(error);
+      announce("目前無法播放展品描述，請稍後再試", true);
+    }
+  });
+
+  audioPlayer.addEventListener("ended", () => {
+    setAudioState("idle");
+    try{ audioPlayer.currentTime = 0; }catch(e){}
+    announce("展品描述播放完畢");
+  });
+
+  prevButton.addEventListener("click", async () => {
+    if(currentIndex <= 0){
+      announce(
+        `已是第一件，第 1 件，共 ${exhibits.length} 件。可使用下一件或展品總覽。`,
+        true
+      );
+      return;
+    }
+
+    await goToExhibit(currentIndex - 1);
+  });
+
+  nextButton.addEventListener("click", async () => {
+    if(currentIndex >= exhibits.length - 1){
+      announce(
+        `已是最後一件，第 ${exhibits.length} 件，共 ${exhibits.length} 件。可使用上一件或展品總覽。`,
+        true
+      );
+      return;
+    }
+
+    await goToExhibit(currentIndex + 1);
+  });
+
+  function renderOverview(){
+    overviewCount.textContent = `共 ${exhibits.length} 件`;
+    overviewList.innerHTML = "";
+
+    exhibits.forEach((ex,index) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      const isCurrent = index === currentIndex;
+
+      btn.type = "button";
+      btn.className = "overview-item";
+
+      btn.setAttribute(
+        "aria-label",
+        `第 ${index + 1} 件，${ex.title}${isCurrent ? "，目前展品" : ""}`
+      );
+
+      const main = document.createElement("span");
+      main.className = "overview-main";
+      main.setAttribute("aria-hidden","true");
+
+      const number = document.createElement("span");
+      number.className = "overview-number";
+      number.textContent = `第 ${index + 1} 件`;
+
+      const name = document.createElement("span");
+      name.className = "overview-name";
+      name.textContent = ex.title;
+
+      main.append(number,name);
+
+      if(isCurrent){
+        const badge = document.createElement("span");
+        badge.className = "current-badge";
+        badge.textContent = "目前展品";
+        main.appendChild(badge);
+      }
+
+      const chevron = document.createElement("span");
+      chevron.className = "chevron";
+      chevron.setAttribute("aria-hidden","true");
+      chevron.textContent = "›";
+
+      btn.append(main,chevron);
+
+      btn.addEventListener("click", async () => {
+        if(index !== currentIndex){
+          const ok = await goToExhibit(index,{announceChange:false});
+          if(!ok) return;
+        }
+
+        overviewScreen.hidden = true;
+        detailScreen.hidden = false;
+
+        exhibitTitle.setAttribute("tabindex","-1");
+        exhibitTitle.focus();
+        exhibitTitle.removeAttribute("tabindex");
+
+        announce(
+          `第 ${currentIndex + 1} 件，共 ${exhibits.length} 件，${exhibits[currentIndex].title}`
+        );
+      });
+
+      li.appendChild(btn);
+      overviewList.appendChild(li);
+    });
+  }
+
+  overviewButton.addEventListener("click", () => {
+    stopAudio();
+    renderOverview();
+
+    detailScreen.hidden = true;
+    overviewScreen.hidden = false;
+
+    overviewHeading.setAttribute("tabindex","-1");
+    overviewHeading.focus();
+    overviewHeading.removeAttribute("tabindex");
+  });
+
+  backButton.addEventListener("click", () => {
+    overviewScreen.hidden = true;
+    detailScreen.hidden = false;
+    renderText();
+    overviewButton.focus();
+  });
+
+  async function init(){
+    try{
+      await loadExhibitsFromTxt();
+
+      // 第一張本身已由 HTML + preload 優先請求。
+      // 等第一張完整可用後才顯示主畫面。
+      await waitForImage(photoA, exhibits[0].image);
+
+      visiblePhoto = "A";
+      photoA.classList.add("is-visible");
+
+      renderText();
+      preloadNextImage(0);
+
+      loadingScreen.hidden = true;
+      detailScreen.hidden = false;
+
+    }catch(error){
+      console.error(error);
+
+      const expectedUrl =
+        new URL("./exhibits.txt", document.baseURI).href;
+
+      loadingMessage.textContent =
+        `展品載入失敗。請確認 exhibits.txt 與圖片檔都已正確上傳。資料位置：${expectedUrl}`;
+    }
+  }
+
+  // 離開頁面時只停止聲音，不做任何持久快取。
+  document.addEventListener("visibilitychange", () => {
+    if(document.visibilityState === "hidden"){
+      stopAudio();
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    stopAudio();
+  });
+
+  init();
+</script>
+
+<!--
+  注意：
+  這一版刻意「不註冊 Service Worker」。
+  圖片使用瀏覽器正常 HTTP cache，不建立持久 Cache Storage。
+-->
+
+</body>
+</html>
